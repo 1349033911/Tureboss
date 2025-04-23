@@ -26,6 +26,17 @@ button_hold_delay2 = 0.11    # 按键按下持续时间（默认0.11秒）
 button_release_delay2 = 0.15 # 松开按键后等待时间（默认0.15秒）
 button_release_delay3 = 1.5  # 松开按键后等待时间（默认1.5秒）
 
+# 音频参数
+[Audio]
+format = pyaudio.paInt16     # 16-bit采样格式
+channals = 2                 # 声道
+rate = 44100                 # 采样率
+chunk = 1024                 # 每次读取的帧数
+threshold = 2.8              # 响度阈值（根据实际情况调整）
+audio_timeout = 35                 # 超时时间（秒）
+
+#音频相关配置
+
 # 循环次数配置
 [Loop]
 iterations = 100             # 总循环次数（默认100次）
@@ -99,6 +110,12 @@ button_release_delay2 = get_config_float(config, 'Delays', 'button_release_delay
 button_release_delay3 = get_config_float(config, 'Delays', 'button_release_delay3', 1.5)
 t = get_config_int(config, 'Loop', 'iterations', 100)
 character = get_config_int(config, 'Character', 'choice', 1)
+format = get_config_int(config, 'Audio', 'format', pyaudio.paInt16)     
+channals = get_config_int(config, 'Audio', 'channals', 2)                      
+rate = get_config_int(config, 'Audio', 'rate', 44100)                     
+chunk = get_config_int(config, 'Audio', 'chunk', 1024)                     
+threshold = get_config_float(config, 'Audio', 'threshold', 2.8)                  
+audio_timeout = get_config_int(config, 'Audio', 'timeout ', 60)                     
 
 # 验证角色选择
 if character not in (1, 2, 3):
@@ -116,6 +133,8 @@ print(f"""运行参数：
   6. 按键3等待时间 = {button_release_delay3} 秒
   7. 循环次数     = {t}
   8. 当前角色     = {'富兰克林' if character == 1 else '麦克' if character == 2 else '崔佛'}
+  9. 音频检测阈值 = {threshold}             
+  10. 音频检测超时 = {audio_timeout}  秒
 """)
 
 # 创建音频实例
@@ -127,17 +146,7 @@ for i in range(p.get_device_count()):
         if device_info.get('hostApi', '') == 0:
             # print(device_info)
             index = i
-# 设备选择
-# index = int(input("请输入设备序号: "))
-# print("已选择", index, "号")
 
-# 音频参数
-FORMAT = pyaudio.paInt24  # 16-bit采样格式
-CHANNELS = 2
-RATE = 48000  # 采样率
-CHUNK = 1024  # 每次读取的帧数
-THRESHOLD = 2.8  # 响度阈值（根据实际情况调整）
-TIMEOUT = 35  # 超时时间（秒）
 
 # 创建手柄实例
 gamepad = vg.VDS4Gamepad()
@@ -179,9 +188,54 @@ def right_joystick(x_value, y_value):  # -1.0到1.0之间的浮点值
 def get_domain_ip(domain: str) -> str:
     return socket.gethostbyname(domain)
 
+def cutnetwork():
+    ip = get_domain_ip("cs-gta5-prod.ros.rockstargames.com")
+    subprocess.run(
+            f'netsh advfirewall firewall add rule '
+            f'dir=out action=block protocol=TCP '
+            f'remoteip="{ip},192.81.241.171" '
+            f'name="仅阻止云存档上传"',
+            shell=True,stdout=subprocess.DEVNULL
+        )
+    print("已断网，开始检测音频")
+def getRuntime():
+    Runtime = time.time() - start_time
+    # 将秒转换为小时、分钟、秒
+    hours = int(Runtime // 3600)
+    remaining_seconds = Runtime % 3600
+    minutes = int(remaining_seconds // 60)
+    seconds = int(remaining_seconds % 60)
+    print(f"运行时间：{hours:02}:{minutes:02}:{seconds:02}\n")
+def listening():
+    audio_start_time = time.time()
+    while True:
+
+      if time.time() - audio_start_time > audio_timeout:
+        print("超时，未检测到超过阈值的音频")
+        break
+      stream = p.open(
+                format=format,
+                channels=1,
+                rate=rate,
+                input=True,
+                input_device_index=index,
+                frames_per_buffer=chunk,
+            )
+      data = stream.read(chunk, exception_on_overflow=False)
+      audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+      rms = np.sqrt(np.mean(audio_data ** 2)) * 100 + 1e-10
+      print(f"\r当前 RMS: {rms:.3f}", end='')
+      stream.close()
+      if rms > threshold:
+        print(f"\n检测到响度超过阈值: {rms:.3f} > {threshold}")
+        cutnetwork()
+        print("再断一次")
+      break
+
 
 # 主逻辑
 r = 0
+start_time=time.time()
 try:
     for _ in range(t):
         # 删除旧的防火墙规则
@@ -216,49 +270,10 @@ try:
 
         # 断网
         time.sleep(delay_firewall)
-        ip = get_domain_ip("cs-gta5-prod.ros.rockstargames.com")
-        subprocess.run(
-            f'netsh advfirewall firewall add rule '
-            f'dir=out action=block protocol=TCP '
-            f'remoteip="{ip},192.81.241.171" '
-            f'name="仅阻止云存档上传"',
-            shell=True,stdout=subprocess.DEVNULL
-        )
-        print("已断网，开始检测音频")
+        cutnetwork()
 
         # 检测音频响度
-        start_time = time.time()
-        while True:
-            if time.time() - start_time > TIMEOUT:
-                print("超时，未检测到超过阈值的音频")
-                break
-            stream = p.open(
-                format=FORMAT,
-                channels=1,
-                rate=RATE,
-                input=True,
-                input_device_index=index,
-                frames_per_buffer=CHUNK,
-            )
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-            rms = np.sqrt(np.mean(audio_data ** 2)) * 100 + 1e-10
-            print(f"\r当前 RMS: {rms:.3f}", end='')
-            stream.close()
-            if rms > THRESHOLD:
-                print(f"\n检测到响度超过阈值: {rms:.3f} > {THRESHOLD}")
-                # 再次断网
-                ip = get_domain_ip("cs-gta5-prod.ros.rockstargames.com")
-                subprocess.run(
-                    f'netsh advfirewall firewall add rule '
-                    f'dir=out action=block protocol=TCP '
-                    f'remoteip="{ip},192.81.241.171" '
-                    f'name="仅阻止云存档上传"',
-                    shell=True,stdout=subprocess.DEVNULL
-                )
-                print("再断一次")
-                break
-
+        listening()
         # 下云后延迟
         time.sleep(delay_loading)
         print("发呆等电话…")
@@ -293,8 +308,9 @@ try:
         # 线下到线上延迟
         time.sleep(delay_offline_online)
         r += 1
-        print(f"已完成 {r} 次\n")
 
+        print(f"已完成 {r} 次 \n")
+        getRuntime()
 except KeyboardInterrupt:
     print(f"\n已完成 {r} 次，检测到用户中断，正在清理防火墙规则…")
     subprocess.run('netsh advfirewall firewall delete rule name="仅阻止云存档上传"', shell=True,stdout=subprocess.DEVNULL)
